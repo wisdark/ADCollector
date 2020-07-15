@@ -14,13 +14,13 @@ using System.Xml;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
-
+using System.Text;
 
 namespace ADCollector2
 {
     internal static class Functions
     {
-
+        public static readonly Dictionary<string, string> OUs = new Dictionary<string, string>();
 
         public static LdapConnection GetConnection(string domainName, bool ldaps)
         {
@@ -41,14 +41,6 @@ namespace ADCollector2
             //Console.WriteLine("\n * LDAP Server is Connected");
             return conn;
         }
-
-
-
-
-
-
-
-
 
 
 
@@ -121,6 +113,10 @@ namespace ADCollector2
                             Outputs.PrintGPO(response);
                             break;
 
+                        case "ou":
+                            GetOU(response);
+                            break;
+
                         case "spn":
                             Outputs.PrintSPNs(response, spnName);
                             break;
@@ -191,11 +187,8 @@ namespace ADCollector2
 
 
 
-
-
         public static void GetAppliedGPOs(LdapConnection connection, string rootDn, string name, bool isPC = false)
         {
-
             //if it is a computer account or a user account
             string nFilter = isPC ? @"(&(sAMAccountType=805306369)(name=" + name + "))" : @"(&(sAMAccountType=805306368)(name=" + name + "))";
 
@@ -204,61 +197,64 @@ namespace ADCollector2
             //get the account distingushied name
             string Dn = GetSingleValue(connection, nFilter, SearchScope.Subtree, nAttrs, rootDn);
 
-            Console.WriteLine("  * DN: {0}\n", Dn);
-
-            //If Last OU/Domain blocks inheritance
-            bool isBlocking = false;
-
-            string dn = "CN=" + name + ",";
-
-            string ou = Dn.Replace(dn, "");
-
-            //OU will not be affected by the block rule on itself
-            int blockCounter = 0;
-
-            while (ou.Contains(","))
+            if (!string.IsNullOrEmpty(Dn))
             {
+                Console.WriteLine("  * DN: {0}\n", Dn);
 
-                using (var entry = new DirectoryEntry("LDAP://" + ou))
+                //If Last OU/Domain blocks inheritance
+                bool isBlocking = false;
+
+                string dn = "CN=" + name + ",";
+
+                string ou = Dn.Replace(dn, "");
+
+                //OU will not be affected by the block rule on itself
+                int blockCounter = 0;
+
+
+                while (ou.Contains(","))
                 {
-                    isBlocking = Outputs.PrintGplink(entry, ou, isBlocking, blockCounter);
 
-                    if (isBlocking)
+                    using (var entry = new DirectoryEntry("LDAP://" + ou))
                     {
-                        blockCounter += 1;
+                        isBlocking = Outputs.PrintGplink(entry, ou, isBlocking, blockCounter);
+
+                        if (isBlocking)
+                        {
+                            blockCounter += 1;
+                        }
                     }
-                }
 
-                if (ou.Contains(","))
-                {
-                    ou = ou.Substring(ou.IndexOf(",") + 1);
-                }
-                else
-                {
-                    break;
-                }
-
-            }
-
-
-            //get GPO applied on the site
-            if (isPC)
-            {
-                try
-                {
-                    string site = ActiveDirectorySite.GetComputerSite().Name;
-
-                    string siteDn = "CN=" + site + ",CN=Sites,CN=Configuration," + rootDn;
-
-                    using (var entry = new DirectoryEntry("LDAP://" + siteDn))
+                    if (ou.Contains(","))
                     {
-                        Outputs.PrintGplink(entry, siteDn, isBlocking, blockCounter);
+                        ou = ou.Substring(ou.IndexOf(",") + 1);
+                    }
+                    else
+                    {
+                        break;
                     }
 
                 }
-                catch { }
-            }
 
+
+                //get GPO applied on the site
+                if (isPC)
+                {
+                    try
+                    {
+                        string site = ActiveDirectorySite.GetComputerSite().Name;
+
+                        string siteDn = "CN=" + site + ",CN=Sites,CN=Configuration," + rootDn;
+
+                        using (var entry = new DirectoryEntry("LDAP://" + siteDn))
+                        {
+                            Outputs.PrintGplink(entry, siteDn, isBlocking, blockCounter);
+                        }
+
+                    }
+                    catch { }
+                }
+            }
 
         }
 
@@ -292,9 +288,6 @@ namespace ADCollector2
 
             
         }
-
-
-
 
 
 
@@ -393,9 +386,6 @@ namespace ADCollector2
 
 
 
-
-
-
         public static void GetForestTrusts(Forest currentForest)
         {
 
@@ -452,6 +442,20 @@ namespace ADCollector2
                 Console.WriteLine("    MaxRenewAge:             {0} Days", data["Kerberos Policy"]["MaxRenewAge"]);
                 Console.WriteLine("    MaxClockSkew:            {0} Minutes", data["Kerberos Policy"]["MaxClockSkew"]);
                 Console.WriteLine("    TicketValidateClient:    {0}", data["Kerberos Policy"]["TicketValidateClient"]);
+                Console.WriteLine();
+                Console.WriteLine("    MinimumPasswordAge:      {0} ", data["System Access"]["MinimumPasswordAge"]);
+                Console.WriteLine("    MaximumPasswordAge:      {0} ", data["System Access"]["MaximumPasswordAge"]);
+                Console.WriteLine("    MinimumPasswordLength:   {0} ", data["System Access"]["MinimumPasswordLength"]);
+                Console.WriteLine("    PasswordComplexity:      {0} ", data["System Access"]["PasswordComplexity"]);
+                Console.WriteLine("    PasswordHistorySize:     {0} ", data["System Access"]["PasswordHistorySize"]);
+                if (!string.IsNullOrEmpty(data["System Access"]["LockoutBadCount"]))
+                {
+                    Console.WriteLine("    LockoutBadCount:         {0} ", data["System Access"]["LockoutBadCount"]);
+                    Console.WriteLine("    LockoutDuration:         {0} Minutes", data["System Access"]["LockoutDuration"]);
+                    Console.WriteLine("    ResetLockoutCount:       {0} Minutes", data["System Access"]["ResetLockoutCount"]);
+                }
+
+
 
             }
             catch (Exception e)
@@ -466,7 +470,7 @@ namespace ADCollector2
 
 
 
-        public static void GetInterestingAcls(string targetDn, string forestDn)
+        public static void GetInterestingAcls(string targetDn, string forestDn, bool laps = false)
         {
             try
             {
@@ -478,12 +482,18 @@ namespace ADCollector2
 
                     rules = sec.GetAccessRules(true, true, typeof(NTAccount));
 
-                    Console.WriteLine("  - Object DN: {0}", targetDn);
-                    Console.WriteLine();
 
                     foreach (ActiveDirectoryAccessRule rule in rules)
                     {
-                        Outputs.PrintAce(rule, forestDn);
+                        if (!laps)
+                        {
+                            Outputs.PrintAce(targetDn, rule, forestDn);
+                        }
+                        else
+                        {
+                            Outputs.PrintLAPSView(targetDn, rule, forestDn);
+                        }
+                        
                     }
                 }
             }
@@ -491,6 +501,29 @@ namespace ADCollector2
             
         }
 
+
+
+        public static void GetOU(SearchResponse response)
+        {
+            foreach (SearchResultEntry entry in response.Entries)
+            {
+                string DN = entry.DistinguishedName;
+                string name = entry.Attributes["name"][0].ToString();
+                OUs.Add(DN, name);
+            }
+        }
+
+
+        public static void GetLAPSView(string forestDn)
+        {
+            //iterate each OU to find ReadProperty ACL on LAPS confidential attribute
+            foreach (KeyValuePair<string, string> ou in OUs)
+            {
+                //TRUE for printing LAPS access here
+                GetInterestingAcls(ou.Key, forestDn, true);
+            }
+
+        }
 
 
 
@@ -530,7 +563,8 @@ namespace ADCollector2
 
         public static void GetInterestingDescription(LdapConnection connection, string rootDn, string term)
         {
-            string desFilter = (term != null) ? @"(&(sAMAccountType=805306368)(description=*" + term + "*))" : @"(&(sAMAccountType=805306368)(description=*pass*))";
+            string desFilter = (term != null) ? @"(&(sAMAccountType=805306368)(description=*" + term + "*))" :
+                @"(&(sAMAccountType=805306368)(description=*pass*))";
 
             string[] descripAttrs = { "description", "sAMAccountName"};
 
@@ -543,20 +577,23 @@ namespace ADCollector2
 
 
 
-        public static string ResolveRightsGuids(string forestDn, string rightsGuid)
+        public static string ResolveRightsGuids(string forestDn, string rightsGuid, bool isRights = true)
         {
-            var extrightsDn = "CN=Extended-Rights,CN=Configuration," + forestDn;
+            string partition = isRights ? "CN=Extended-Rights,CN=Configuration," : "CN=Schema,CN=Configuration,";
+            //No SPACE near "="
+            //From The .Net Developer Guide to Directory Services Programming Searching for Binary Data
+            string searchFilter = isRights ? @"(rightsGuid=" + rightsGuid + @")" :
+                @"(schemaIDGUID=" + BuildFilterOctetString(new Guid(rightsGuid).ToByteArray()) + @")";
+
+            var extrightsDn = partition + forestDn;
 
             var rightsEntry = new DirectoryEntry("LDAP://" + extrightsDn);
 
             var rightsSearcher = new DirectorySearcher(rightsEntry);
 
-            string rightFilter = @"(rightsGuid=" + rightsGuid + @")";
-
-            rightsSearcher.Filter = rightFilter;
+            rightsSearcher.Filter = searchFilter;
             rightsSearcher.SearchScope = System.DirectoryServices.SearchScope.OneLevel;
             var rightsFinder = rightsSearcher.FindOne();
-
 
             var rightDn = rightsFinder.Properties["cn"][0].ToString();
 
@@ -564,6 +601,18 @@ namespace ADCollector2
             
 
         }
+
+
+        private static string BuildFilterOctetString(byte[] bytes)
+        {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < bytes.Length; i++)
+            {
+                sb.AppendFormat("\\{0}", bytes[i].ToString("X2"));
+            }
+            return sb.ToString();
+        }
+
 
 
 
@@ -870,40 +919,38 @@ namespace ADCollector2
         }
 
 
-        public static void GetNestedGroupMem(LdapConnection connection, string rootDn, string user)
+        public static void GetNestedGroupMem(LdapConnection connection, string rootDn, string user, bool isPC = false)
         {
-            
-            string userFilter = @"(&(sAMAccountType=805306368)(name=" + user + "))";
+            //if it is a computer account or a user account
+            string userFilter = isPC ? @"(&(sAMAccountType=805306369)(name=" + user + "))" : @"(&(sAMAccountType=805306368)(name=" + user + "))";
 
             string[] nAttrs = { "distingushiedName" };
 
             string userDn = GetSingleValue(connection, userFilter, SearchScope.Subtree, nAttrs, rootDn);
 
-
-            using (var userEntry = new DirectoryEntry("LDAP://" + userDn))
+            if (!string.IsNullOrEmpty(userDn))
             {
-                //https://www.morgantechspace.com/2015/08/active-directory-tokengroups-vs-memberof.html
-                //Use RefreshCach to get the constructed attribute tokenGroups.
-                userEntry.RefreshCache(new string[] { "tokenGroups" });
-
-                foreach (byte[] sid in userEntry.Properties["tokenGroups"])
+                using (var userEntry = new DirectoryEntry("LDAP://" + userDn))
                 {
-                    string groupSID = new SecurityIdentifier(sid, 0).ToString();
-                    try
-                    {
-                        Console.WriteLine("  * {0}", Helper.SidToName(groupSID));
-                    }
-                    catch
-                    {
-                        Console.WriteLine("  * Unresolvable Group SID {0}: ", groupSID);
-                    }
+                    //https://www.morgantechspace.com/2015/08/active-directory-tokengroups-vs-memberof.html
+                    //Use RefreshCach to get the constructed attribute tokenGroups.
+                    userEntry.RefreshCache(new string[] { "tokenGroups" });
 
+                    foreach (byte[] sid in userEntry.Properties["tokenGroups"])
+                    {
+                        string groupSID = new SecurityIdentifier(sid, 0).ToString();
+                        try
+                        {
+                            Console.WriteLine("  * {0}", Helper.SidToName(groupSID));
+                        }
+                        catch
+                        {
+                            Console.WriteLine("  * Unresolvable Group SID {0}: ", groupSID);
+                        }
+
+                    }
                 }
             }
-            
         }
-
-
-
     }
 }

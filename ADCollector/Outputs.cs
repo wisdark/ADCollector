@@ -12,7 +12,9 @@ namespace ADCollector2
     internal static class Outputs
     {
         public static readonly Dictionary<string, string> gpos = new Dictionary<string, string>();
+
         public static IDictionary<string, int> dcsyncCounter = new Dictionary<string, int>();
+
 
         public static void PrintSingle(SearchResponse response, string attr)
         {
@@ -43,7 +45,12 @@ namespace ADCollector2
             {
                 //Only if the attribute is specified to be returned, then "Attributes" contains it
 
-                Console.WriteLine("  * {0}", entry.Attributes["sAMAccountName"][0]);
+                //In case the target is not a user/computer object, but an attribute in the schema
+                if (entry.Attributes.Contains("sAMAccountName"))
+                {
+                    Console.WriteLine("  * {0}", entry.Attributes["sAMAccountName"][0]);
+                }
+
                 Console.WriteLine("    {0}\n", entry.DistinguishedName);
 
                 //in case the attribute value is null
@@ -60,12 +67,13 @@ namespace ADCollector2
                     }
                     else if (entry.Attributes[attr][0] is byte[])
                     {
-                        for (int i = 0; i < entry.Attributes[attr].Count; i++)
-                        {
-                            Console.WriteLine("    - {0}: {1}",
-                                attr.ToUpper(),
-                                System.Text.Encoding.ASCII.GetString((byte[])entry.Attributes[attr][i]));
-                        }
+                        PrintSD(entry, attr);
+                        //for (int i = 0; i < entry.Attributes[attr].Count; i++)
+                        //{
+                        //    Console.WriteLine("    - {0}: {1}",
+                        //        attr.ToUpper(),
+                        //        System.Text.Encoding.ASCII.GetString((byte[])entry.Attributes[attr][i]));
+                        //}
                     }
                     else
                     {
@@ -73,7 +81,7 @@ namespace ADCollector2
                     }
                 }
                 catch { }
-                
+
                 Console.WriteLine();
             }
         }
@@ -83,12 +91,16 @@ namespace ADCollector2
             foreach (SearchResultEntry entry in response.Entries)
             {
                 var attrs = entry.Attributes;
-
+                Console.WriteLine("  * {0}\n", entry.DistinguishedName);
                 foreach (DirectoryAttribute attr in attrs.Values)
                 {
                     if (entry.Attributes[attr.Name][0] is string)
                     {
-                        Console.WriteLine("  * {0} : {1}", attr.Name.ToUpper(), entry.Attributes[attr.Name][0]);
+                        for (int i = 0; i < entry.Attributes[attr.Name].Count; i++)
+                        {
+                            Console.WriteLine("    - {0}: {1}", attr.Name.ToUpper(), entry.Attributes[attr.Name][i]);
+                        }
+                        //Console.WriteLine("  * {0} : {1}", attr.Name.ToUpper(), entry.Attributes[attr.Name][0]);
                     }
                     else if (entry.Attributes[attr.Name][0] is byte[])
                     {
@@ -228,6 +240,23 @@ namespace ADCollector2
         }
 
 
+        public static void PrintSD(SearchResultEntry entry, string attr)
+        {
+            //Resolve Security Descriptor
+            //From The .Net Developer Guide to Directory Services Programming Listing 8.2. Listing the DACL
+            ActiveDirectorySecurity ads = new ActiveDirectorySecurity();
+            ads.SetSecurityDescriptorBinaryForm((byte[])entry.Attributes[attr][0]);
+            var rules = ads.GetAccessRules(true, true, typeof(NTAccount));
+            foreach (ActiveDirectoryAccessRule rule in rules)
+            {
+                Console.WriteLine("    - {0}: {1} ([ControlType: {2}] Rights: {3})",
+                    attr.ToUpper(),
+                    rule.IdentityReference.ToString(),
+                    rule.AccessControlType.ToString(),
+                    rule.ActiveDirectoryRights.ToString());
+            }
+        }
+
 
         public static void PrintDomainAttrs(SearchResponse response)
         {
@@ -301,7 +330,7 @@ namespace ADCollector2
 
                 }
                 catch { }
-                
+
 
                 //[MS-GPOL] Section 2.2.2 Domain SOM Search
                 string gpl = entry.Properties["gplink"][0].ToString();
@@ -330,7 +359,7 @@ namespace ADCollector2
                 else { }
 
                 Console.WriteLine();
-                
+
             }
 
             return isBlocking;
@@ -349,7 +378,7 @@ namespace ADCollector2
 
 
 
-        public static void PrintAce(ActiveDirectoryAccessRule rule, string forestDn)
+        public static void PrintAce(string objDn, ActiveDirectoryAccessRule rule, string forestDn)
         {
             //Adapted from https://github.com/PowerShellMafia/PowerSploit/blob/master/Recon/PowerView.ps1#L3746
 
@@ -361,8 +390,11 @@ namespace ADCollector2
 
             var sid = rule.IdentityReference.Translate(typeof(SecurityIdentifier)).ToString();
 
+
             if (int.Parse(sid.Split('-').Last()) > 1000)
             {
+                
+
                 //Sometimes the identity reference cannot be resolved
                 string IR = "";
                 try
@@ -371,8 +403,11 @@ namespace ADCollector2
                 }
                 catch { }
 
-                if (rights.IsMatch(rule.ActiveDirectoryRights.ToString()) )
+                if (rights.IsMatch(rule.ActiveDirectoryRights.ToString()))
                 {
+                    
+                    Console.WriteLine("  - Object DN: {0}", objDn);
+                    Console.WriteLine();
                     Console.WriteLine("     IdentityReference:          {0}", IR);
                     Console.WriteLine("     IdentitySID:                {0}", rule.IdentityReference.Translate(typeof(SecurityIdentifier)).ToString());
                     Console.WriteLine("     ActiveDirectoryRights:      {0}", rule.ActiveDirectoryRights.ToString());
@@ -380,18 +415,21 @@ namespace ADCollector2
                 }
                 else if (rule.ActiveDirectoryRights.ToString() == "ExtendedRight" && rule.AccessControlType.ToString() == "Allow")
                 {
-                    Console.WriteLine("     IdentityReference:          {0}", IR );
+                    Console.WriteLine("  - Object DN: {0}", objDn);
+                    Console.WriteLine();
+                    Console.WriteLine("     IdentityReference:          {0}", IR);
                     Console.WriteLine("     IdentitySID:                {0}", rule.IdentityReference.Translate(typeof(SecurityIdentifier)).ToString());
                     Console.WriteLine("     ActiveDirectoryRights:      {0}", rule.ActiveDirectoryRights.ToString());
 
                     //The ObjectType GUID maps to an extended right registered in the current forest schema, then that specific extended right is granted
                     //Reference: https://www.blackhat.com/docs/us-17/wednesday/us-17-Robbins-An-ACE-Up-The-Sleeve-Designing-Active-Directory-DACL-Backdoors-wp.pdf
-                    
+
                     string objType = Functions.ResolveRightsGuids(forestDn, rule.ObjectType.ToString());
+
                     Console.WriteLine("     ObjectType:                 {0}", objType);
 
 
-                    if (dcsync.Contains(objType)){
+                    if (dcsync.Contains(objType)) {
 
                         if (dcsyncCounter.ContainsKey(IR))
                         {
@@ -409,6 +447,44 @@ namespace ADCollector2
                 }
             }
 
+        }
+
+
+
+        public static void PrintLAPSView(string objDn, ActiveDirectoryAccessRule rule, string forestDn)
+        {
+            //https://adsecurity.org/?p=3164
+
+            Regex rights = new Regex(@"(.*Read.*)", RegexOptions.Compiled);
+
+            var sid = rule.IdentityReference.Translate(typeof(SecurityIdentifier)).ToString();
+
+            if (int.Parse(sid.Split('-').Last()) > 1000)
+            {
+                //Sometimes the identity reference cannot be resolved
+                string IR = "";
+                try
+                {
+                    IR = rule.IdentityReference.ToString();
+                }
+                catch { }
+
+                //FALSE for resolving Schema attribute instead of extended rights
+                string objType = Functions.ResolveRightsGuids(forestDn, rule.ObjectType.ToString(), false);
+                if (rights.IsMatch(rule.ActiveDirectoryRights.ToString())
+                    && objType == "ms-Mcs-AdmPwd")
+                {
+                    Console.WriteLine("  - Object DN: {0}", objDn);
+                    Console.WriteLine();
+
+                    Console.WriteLine("     ObjectType:                 {0}", objType);
+                    Console.WriteLine("     ObjectFlags:                {0}", rule.ObjectFlags);
+                    Console.WriteLine("     IdentityReference:          {0}", IR);
+                    Console.WriteLine("     IdentitySID:                {0}", rule.IdentityReference.Translate(typeof(SecurityIdentifier)).ToString());
+                    Console.WriteLine("     ActiveDirectoryRights:      {0}", rule.ActiveDirectoryRights.ToString());
+                    Console.WriteLine();
+                }
+            }
         }
 
     }

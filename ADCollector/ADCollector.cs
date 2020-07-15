@@ -208,7 +208,7 @@ Example: .\ADCollector.exe --SPNs --Term key --Acls 'CN=Domain Admins,CN=Users,D
 
 
             Console.WriteLine();
-            PrintGreen("[-] Kerberos Policy:");
+            PrintGreen("[-] Kerberos Policy & System Access:");
             Console.WriteLine();
             Functions.GetDomainPolicy(domain.Name);
 
@@ -328,19 +328,25 @@ Example: .\ADCollector.exe --SPNs --Term key --Acls 'CN=Domain Admins,CN=Users,D
                 PrintGreen("[-] Effective GPOs On the Current User:");
                 Console.WriteLine();
                 string uName = Environment.GetEnvironmentVariable("USERNAME");
-                Functions.GetAppliedGPOs(connection, rootDn, uName);
-
-
+                bool isPC = uName.Contains("$");
+                uName =  isPC ? uName.Replace("$", string.Empty) : uName;
+                Functions.GetAppliedGPOs(connection, rootDn, uName, isPC);
+                
 
 
                 Console.WriteLine();
                 PrintGreen("[-] Nested Group Membership For the Current User:");
                 Console.WriteLine();
-                Functions.GetNestedGroupMem(connection, rootDn, uName);
+                Functions.GetNestedGroupMem(connection, rootDn, uName, isPC);
             }
-            
 
 
+
+
+            Console.WriteLine();
+            PrintGreen("[-] Restricted Groups:");
+            Console.WriteLine();
+            Functions.GetRestrictedGroup(rootDn);
 
 
             Console.WriteLine();
@@ -422,9 +428,11 @@ Example: .\ADCollector.exe --SPNs --Term key --Acls 'CN=Domain Admins,CN=Users,D
             Console.WriteLine();
             PrintGreen("[-] Privileged Accounts:");
             Console.WriteLine();
-            string adminsFilter = @"(&(objectClass=group)(|(name=Domain Admins)(name=Enterprise Admins)))";
-            string[] AdminsAttrs = { "member", "sAMAccountName" };
-            Functions.GetResponse(connection, adminsFilter, SearchScope.Subtree, AdminsAttrs, rootDn, "multi");
+            //string adminsFilter = @"(&(objectClass=group)(|(name=Domain Admins)(name=Enterprise Admins)))";
+            //1.2.840.113556.1.4.1941 is the OID for LDAP_MATCHING_RULE_IN_CHAIN and LDAP_MATCHING_RULE_TRANSITIVE_EVAL
+            string adminsFilter = "(&(objectClass=user)(memberof:1.2.840.113556.1.4.1941:=CN=Domain Admins,CN=Users," + rootDn + "))";
+            string[] AdminsAttrs = {  "sAMAccountName", "memberOf", };
+            Functions.GetResponse(connection, adminsFilter, SearchScope.Subtree, AdminsAttrs, rootDn, "all");
 
 
 
@@ -472,22 +480,11 @@ Example: .\ADCollector.exe --SPNs --Term key --Acls 'CN=Domain Admins,CN=Users,D
             Functions.GetResponse(connection, noPreAuthFilter, SearchScope.Subtree, noPreAuthAttrs, rootDn, "single");
 
 
-
-            Console.WriteLine();
-            PrintGreen("[-] Confidential Attributes:");
-            Console.WriteLine();
-            string confidentialFilter = @"(searchFlags:1.2.840.113556.1.4.803:=128)";
-            string[] confidentialAttrs = { "name" };
-            Functions.GetResponse(connection, confidentialFilter, SearchScope.Subtree, confidentialAttrs, schemaNamingContext, "single");
-
-
-
             Console.WriteLine();
             PrintGreen("[-] Interesting Descriptions on User Objects:");
             Console.WriteLine();
             Functions.GetInterestingDescription(connection, rootDn, term);
-
-
+            
 
             Console.WriteLine();
             PrintGreen("[-] Group Policy Preference Passwords in SYSVOL/Cache:");
@@ -528,9 +525,21 @@ Example: .\ADCollector.exe --SPNs --Term key --Acls 'CN=Domain Admins,CN=Users,D
 
 
             Console.WriteLine();
-            PrintGreen("[-] Restricted Groups:");
+            PrintGreen("[-] Confidential Attributes:");
             Console.WriteLine();
-            Functions.GetRestrictedGroup(rootDn);
+            string confidentialFilter = @"(searchFlags:1.2.840.113556.1.4.803:=128)";
+            string[] confidentialAttrs = { "name" };
+            Functions.GetResponse(connection, confidentialFilter, SearchScope.Subtree, confidentialAttrs, schemaNamingContext, "single");
+
+
+
+            Console.WriteLine();
+            PrintGreen("[-] LAPS Password View Access:");
+            Console.WriteLine();
+            string ouFilter = "(objectClass=organizationalUnit)";
+            Functions.GetResponse(connection, ouFilter, SearchScope.Subtree, confidentialAttrs, rootDn, "ou");
+            Functions.GetLAPSView(forestDn);
+
 
 
 
